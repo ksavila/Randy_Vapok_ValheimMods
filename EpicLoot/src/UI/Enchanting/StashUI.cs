@@ -13,6 +13,11 @@ namespace EpicLoot_UnityLib
         public TMP_Text CapacityLabel;
         public MultiSelectItemList MaterialsList;
         public MultiSelectItemList ShardstonesList;
+        public Button TakeAllMaterialsButton;
+        public Button TakeAllShardstonesButton;
+
+        // Left stick click, the press vanilla uses to take everything from a chest.
+        private const string TakeAllInput = "JoyLStick";
 
         private readonly Dictionary<string, StashEntry> _entries = new Dictionary<string, StashEntry>();
 
@@ -21,6 +26,8 @@ namespace EpicLoot_UnityLib
         private EnchantingTable _table;
         private EnchantingTableStash _stash;
         private bool _hadAccess;
+        private GameObject _takeAllMaterialsHint;
+        private GameObject _takeAllShardstonesHint;
 
         protected override void OnSelectedItemsChanged()
         {
@@ -34,6 +41,18 @@ namespace EpicLoot_UnityLib
             if (focusController != null)
             {
                 focusController.SetPanes(new IGamepadFocusPane[] { MaterialsList, ShardstonesList });
+            }
+
+            if (TakeAllMaterialsButton != null)
+            {
+                TakeAllMaterialsButton.onClick.AddListener(() => OnTakeAllClicked(StashCatalog.MaterialGrid));
+                _takeAllMaterialsHint = FindGamepadHint(TakeAllMaterialsButton.transform);
+            }
+
+            if (TakeAllShardstonesButton != null)
+            {
+                TakeAllShardstonesButton.onClick.AddListener(() => OnTakeAllClicked(StashCatalog.ShardstoneGrid));
+                _takeAllShardstonesHint = FindGamepadHint(TakeAllShardstonesButton.transform);
             }
         }
 
@@ -81,6 +100,8 @@ namespace EpicLoot_UnityLib
             {
                 Refresh();
             }
+
+            UpdateTakeAllGamepadInput();
 
             if (_locked || !ZInput.IsGamepadActive())
             {
@@ -134,6 +155,68 @@ namespace EpicLoot_UnityLib
             {
                 MainButton.interactable = canDeposit && _hadAccess && HasStashableItems();
             }
+
+            if (TakeAllMaterialsButton != null)
+            {
+                TakeAllMaterialsButton.interactable = HasAnyStored(StashCatalog.MaterialGrid);
+            }
+
+            if (TakeAllShardstonesButton != null)
+            {
+                TakeAllShardstonesButton.interactable = HasAnyStored(StashCatalog.ShardstoneGrid);
+            }
+        }
+
+        // Counts read 0 without ward access, so this also covers that.
+        private bool HasAnyStored(IReadOnlyList<StashItemKind> kinds)
+        {
+            return _stash != null && kinds.Any(kind => _stash.GetCount(kind.PrefabName) > 0);
+        }
+
+        // One press serves both buttons, so it goes to the grid with focus. The buttons carry no UIGamePad of
+        // their own for that reason: each would answer the same press.
+        private void UpdateTakeAllGamepadInput()
+        {
+            Button focused = null;
+            if (!_locked && ZInput.IsGamepadActive())
+            {
+                focused = MaterialsList.HasGamepadFocus() ? TakeAllMaterialsButton
+                    : ShardstonesList.HasGamepadFocus() ? TakeAllShardstonesButton
+                    : null;
+            }
+
+            bool usable = focused != null && focused.IsInteractable();
+            SetHintActive(_takeAllMaterialsHint, usable && focused == TakeAllMaterialsButton);
+            SetHintActive(_takeAllShardstonesHint, usable && focused == TakeAllShardstonesButton);
+
+            if (usable && ZInput.GetButtonDown(TakeAllInput))
+            {
+                ZInput.ResetButtonStatus(TakeAllInput);
+                focused.onClick.Invoke();
+            }
+        }
+
+        private static void SetHintActive(GameObject hint, bool active)
+        {
+            if (hint != null && hint.activeSelf != active)
+            {
+                hint.SetActive(active);
+            }
+        }
+
+        private void OnTakeAllClicked(IReadOnlyList<StashItemKind> kinds)
+        {
+            if (_locked || _stash == null)
+            {
+                return;
+            }
+
+            if (Audio != null && MainActionSFX != null)
+            {
+                Audio.PlayOneShot(MainActionSFX);
+            }
+
+            _stash.WithdrawAll(kinds);
         }
 
         private List<IListElement> BuildEntries(IReadOnlyList<StashItemKind> kinds)

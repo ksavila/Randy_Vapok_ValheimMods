@@ -110,9 +110,12 @@ internal class ELConfig {
     public static ConfigEntry<KeyboardShortcut> SocketOverlayShortcut;
     public static ConfigEntry<SocketGamepadButton> SocketOverlayGamepadButton;
     public static ConfigEntry<SocketGamepadModifier> SocketOverlayGamepadModifier;
+    public static ConfigEntry<ShardSlotPanelPlacement> ShardSlotPanelPlacement;
     public static ConfigEntry<Vector2> ShardSlotPanelOffset;
     private const string SocketOverlayShortcutKey = "Socket Overlay Shortcut";
+    private const string ShardSlotPanelPlacementKey = "Shard Slot Panel Placement";
     private const string ShardSlotPanelOffsetKey = "Shard Slot Panel Offset";
+    private static readonly Vector2 ShardSlotPanelOffsetDefault = new Vector2(10f, -40f);
     /// <summary>The settings Socket Overlay Shortcut replaced, and their old defaults; see MigrateSocketOverlayShortcut.</summary>
     private const string LegacySocketOverlayKey = "Socket Overlay Key";
     private const KeyCode LegacySocketOverlayKeyDefault = KeyCode.LeftControl;
@@ -324,6 +327,7 @@ internal class ELConfig {
         CreateConfigValues();
         MigrateWelcomeWizard();
         MigrateSocketOverlayShortcut();
+        MigrateShardSlotPanelPlacement();
         ApplyPreviousConfigValues();
         // After the migration, so restoring a saved value does not fire a handler into a UI that Awake
         // has not built yet.
@@ -676,11 +680,18 @@ internal class ELConfig {
             SocketGamepadModifier.RTrigger,
             "The gamepad button held with the Socket Overlay Gamepad Button. None means the button alone, " +
             "with neither trigger held.");
-        ShardSlotPanelOffset = BindClient(SectionSockets, ShardSlotPanelOffsetKey, new Vector2(10f, -40f),
-            "Where the shard slot panel sits: the distance from the bottom-right corner of the inventory panel " +
-            "to the panel's own top-left corner, in interface units, x to the right and y downwards (negative). " +
-            "The default puts it beside the chest panel, below where Equipment and Quick Slots places its " +
-            "equipment panel. Takes effect while the panel is open.");
+        ShardSlotPanelPlacement = BindClient(SectionSockets, ShardSlotPanelPlacementKey,
+            ShardStones.ShardSlotPanelPlacement.Automatic,
+            "Automatic puts the shard slot panel in the free spot nearest the bottom-right corner of the " +
+            "inventory panel, clear of the chest panel and of the panels other mods add beside the inventory " +
+            "(such as Equipment and Quick Slots' equipment and quick slots), and moves it if one of them " +
+            "later covers it. Manual puts it at Shard Slot Panel Offset. Dragging the panel by its frame " +
+            "sets the offset and switches this to Manual; set it back to Automatic to undo that.");
+        ShardSlotPanelOffset = BindClient(SectionSockets, ShardSlotPanelOffsetKey, ShardSlotPanelOffsetDefault,
+            "Where the shard slot panel sits when Shard Slot Panel Placement is Manual: the distance from the " +
+            "bottom-right corner of the inventory panel to the panel's own top-left corner, in interface units, " +
+            "x to the right and y downwards (negative). Dragging the panel by its frame sets it. The panel is " +
+            "always kept on screen. Takes effect while the panel is open.");
 
         // 4 - Enchanting Table
         EnchantingTableUpgradesActive = BindServer(SectionEnchanting, "Upgrades Active", true,
@@ -1177,6 +1188,29 @@ internal class ELConfig {
         }
     }
 
+    /// <summary>
+    /// "Shard Slot Panel Offset" used to be the only way to place the shard slot panel. A file from before
+    /// "Shard Slot Panel Placement" whose offset is not the default was moved by the player, so it keeps that
+    /// spot (Manual) instead of handing the panel to automatic placement.
+    /// </summary>
+    private static void MigrateShardSlotPanelPlacement() {
+        if (PreviousConfigValues.ContainsKey($"{SectionSockets}::{ShardSlotPanelPlacementKey}")
+            || !PreviousConfigValues.TryGetValue($"{SectionSockets}::{ShardSlotPanelOffsetKey}", out string stored)) {
+            return;
+        }
+
+        Vector2 offset;
+        try {
+            offset = (Vector2)TomlTypeConverter.ConvertToValue(stored, typeof(Vector2));
+        } catch (Exception) {
+            return;
+        }
+
+        if (Vector2.Distance(offset, ShardSlotPanelOffsetDefault) > 0.5f) {
+            ShardSlotPanelPlacement.Value = ShardStones.ShardSlotPanelPlacement.Manual;
+        }
+    }
+
     private static bool TryReadPreviousSocketKey(string key, out KeyCode value) {
         value = KeyCode.None;
         return PreviousConfigValues.TryGetValue($"{SectionSockets}::{key}", out string previous)
@@ -1510,8 +1544,9 @@ internal class ELConfig {
         }
 
         // The auto-add pass merges onto the live config, writes the result back out and re-reads the
-        // files it rewrote itself, so nothing here waits on the scheduler.
-        AutoAddEnchantableItems.CheckAndAddAllEnchantableItems(false);
+        // files it rewrote itself, so nothing here waits on the scheduler. Forced: the rebuilt files are
+        // new input whatever its last-run record says.
+        AutoAddEnchantableItems.CheckAndAddAllEnchantableItems(false, force: true);
     }
 
     private static void IngestPatchFilesFromDisk(object s, FileSystemEventArgs e) {

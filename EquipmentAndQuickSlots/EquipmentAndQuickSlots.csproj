@@ -43,6 +43,13 @@
     </EmbeddedResource>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The Auga API stub's CraftingControls (src\Auga\AugaAPI.Common.cs) holds a GuiInputField -->
+    <Reference Include="gui_framework">
+      <HintPath>$(GamePathManaged)gui_framework.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
   <Import Project="..\Common\Common.projitems" Label="Shared" />
   <!-- BEGIN mod-tools (managed block; replaced by `mod-tools setup`) -->
   <PropertyGroup>

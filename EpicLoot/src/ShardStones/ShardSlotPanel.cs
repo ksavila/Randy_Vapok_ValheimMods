@@ -3,10 +3,20 @@ using System.Collections.Generic;
 using EpicLoot.Config;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using Object = UnityEngine.Object;
 
 namespace EpicLoot.ShardStones {
+    /// <summary>
+    /// Where the shard slot panel goes: the nearest spot beside the inventory that no other panel uses, or the
+    /// spot the player dragged it to (Shard Slot Panel Offset).
+    /// </summary>
+    public enum ShardSlotPanelPlacement {
+        Automatic,
+        Manual
+    }
+
     // Epic Loot's shard slot panel: a small window of its own beside the inventory that holds one inventory
     // grid, one cell per socket of the item whose slots are open. It is built once per InventoryGui from the
     // pieces vanilla already draws the player panel with (its background, its controller selection frame, the
@@ -15,10 +25,14 @@ namespace EpicLoot.ShardStones {
     // handlers, and Epic Loot's tooltips and magic-item backgrounds, which patch InventoryGrid for every grid,
     // apply without any special case.
     //
-    // Being a panel of its own is the point. A chest and the slots can be open together, nothing about the
-    // chest panel or vanilla's container bookkeeping is borrowed, and the panel is placed off the inventory
-    // panel's bottom-right corner (ShardSlotPanelOffset), which is the one spot vanilla, Equipment and Quick
-    // Slots and the chest panel all leave free. ShardUI decides what the cells hold and what may move.
+    // Being a panel of its own is the point. A chest and the slots can be open together, and nothing about the
+    // chest panel or vanilla's container bookkeeping is borrowed. ShardUI decides what the cells hold and what
+    // may move.
+    //
+    // No spot beside the inventory is free for every setup: Equipment and Quick Slots hangs its equipment panel
+    // and quick slot row off the inventory's right side, ExtraSlots and AzuEPI do the same, and the chest panel
+    // sits below. So the panel measures what is on screen and takes the free spot nearest the inventory panel's
+    // bottom-right corner (Place), unless the player dragged it somewhere (ShardSlotPanelPlacement.Manual).
     internal sealed class ShardSlotPanel {
         // Inset from the panel edge to the cells. The background art overhangs the panel by as much again.
         private const float Pad = 10f;
@@ -30,7 +44,23 @@ namespace EpicLoot.ShardStones {
         // The player grid is group 1 in vanilla's m_uiGroups (0 is the chest, 2 the info bar, 3 crafting).
         private const int PlayerGridGroup = 1;
 
+        // The spot automatic placement prefers: just off the inventory panel's bottom-right corner, beside the
+        // chest panel.
         private static readonly Vector2 DefaultOffset = new Vector2(10f, -40f);
+
+        // Automatic placement keeps this far from other panels (more than the background art's overhang) and
+        // this far inside the screen edge.
+        private const float PanelGap = 14f;
+        private const float ScreenMargin = 4f;
+
+        // What counts as another panel's art: a graphic at least this big that does not cover most of the
+        // screen (a full-screen backdrop is not a panel; vanilla's click catcher behind the window is invisible
+        // and left out anyway).
+        private const float MinObstacleSize = 4f;
+        private const float BackdropFraction = 0.9f;
+
+        // How often automatic placement looks for a change in the window's layout.
+        private const float LayoutCheckInterval = 0.25f;
 
         private static ShardSlotPanel _current;
 
@@ -40,6 +70,19 @@ namespace EpicLoot.ShardStones {
         private readonly TMP_Text _title;
         private readonly UIGroupHandler _group;
         private readonly Vector3[] _corners = new Vector3[4];
+
+        // Automatic placement: the spot found, as an offset from the inventory panel's corner so it follows that
+        // panel, the other panels' rectangles it was checked against, and the layout they were measured from.
+        private readonly List<Rect> _obstacles = new List<Rect>();
+        private Vector2 _autoOffset;
+        private bool _hasAutoOffset;
+        private int _layoutSignature;
+        private float _nextLayoutCheck;
+
+        // A drag of the panel in progress: where the pointer and the panel started.
+        private bool _dragging;
+        private Vector2 _dragStartPointer;
+        private Vector2 _dragStartTopLeft;
 
         public InventoryGrid Grid { get; }
 
@@ -99,13 +142,33 @@ namespace EpicLoot.ShardStones {
 
             // Vanilla's own panel art, so the panel matches the window whatever restyles it. Instantiate keeps
             // the source's stretch anchors, so the clones fit whatever size the panel is given.
+            GameObject dragSurface = null;
             Transform background = playerPanel.Find("Bkg");
             if (background != null) {
-                GameObject clone = Object.Instantiate(background.gameObject, root);
-                clone.name = "Bkg";
-                clone.SetActive(true);
-                clone.transform.SetAsFirstSibling();
+                dragSurface = Object.Instantiate(background.gameObject, root);
+                dragSurface.name = "Bkg";
+                dragSurface.SetActive(true);
+                dragSurface.transform.SetAsFirstSibling();
             }
+
+            // The frame is the drag handle, and it takes the clicks that land on it: a click there with an item
+            // in hand would otherwise reach vanilla's click-outside-the-window catcher and drop the item. The
+            // handle is on the background, beside the cells rather than above them, so a drag that starts on a
+            // cell never reaches it.
+            if (dragSurface == null || dragSurface.GetComponent<Graphic>() == null) {
+                dragSurface = new GameObject("DragSurface", typeof(RectTransform), typeof(Image));
+                var surfaceRect = (RectTransform)dragSurface.transform;
+                surfaceRect.SetParent(root, false);
+                surfaceRect.anchorMin = Vector2.zero;
+                surfaceRect.anchorMax = Vector2.one;
+                surfaceRect.offsetMin = Vector2.zero;
+                surfaceRect.offsetMax = Vector2.zero;
+                surfaceRect.SetAsFirstSibling();
+                dragSurface.GetComponent<Image>().color = Color.clear;
+            }
+
+            dragSurface.GetComponent<Graphic>().raycastTarget = true;
+            DragHandle dragHandle = dragSurface.AddComponent<DragHandle>();
 
             GameObject frame = null;
             Transform selectedFrame = playerPanel.Find("selected_frame");
@@ -188,7 +251,9 @@ namespace EpicLoot.ShardStones {
             grid.CanDropDragOntoItem += gui.CanDropDragOntoItem;
 
             rootGo.SetActive(false);
-            return new ShardSlotPanel(gui, root, grid, title, group);
+            var panel = new ShardSlotPanel(gui, root, grid, title, group);
+            dragHandle.Panel = panel;
+            return panel;
         }
 
         // Sizes the panel for `sockets` cells, titles it, places it and shows it.
@@ -208,6 +273,8 @@ namespace EpicLoot.ShardStones {
                 _title.text = title;
             }
 
+            // Every opening looks for a spot afresh: the panel's size and the panels around it may have changed.
+            _hasAutoOffset = false;
             Place();
             _root.gameObject.SetActive(true);
             RegisterGroup();
@@ -231,23 +298,368 @@ namespace EpicLoot.ShardStones {
 
         public bool HasFocus => IsAlive && _group.IsActive;
 
-        // Hangs the panel off the player panel's bottom-right corner, measured through world space so it
-        // follows whatever shape and scale the player panel has: vanilla's, a taller inventory, or another
-        // mod's restyle. Run every frame the panel is up, so an edit to the offset shows at once.
+        // Places the panel relative to the player panel's bottom-right corner, measured through world space so it
+        // follows whatever shape and scale the player panel has: vanilla's, a taller inventory, or another mod's
+        // restyle. Run every frame the panel is up, so an edit to the offset shows at once. Everything here is in
+        // the local space of the panel's parent, the window root the player and chest panels hang from.
         public void Place() {
+            if (!IsAlive || _playerPanel == null || _dragging) {
+                return;
+            }
+
+            var parent = (RectTransform)_root.parent;
+            Vector2 corner = PlayerCorner(parent);
+            Vector2 offset;
+            if (ELConfig.ShardSlotPanelPlacement != null && ELConfig.ShardSlotPanelPlacement.Value == ShardSlotPanelPlacement.Manual) {
+                offset = ELConfig.ShardSlotPanelOffset.Value;
+            } else {
+                PlaceAutomatically(parent, corner);
+                offset = _autoOffset;
+            }
+
+            SetTopLeft(parent, ClampToScreen(parent, corner + offset));
+        }
+
+        // Finds a free spot when the panel opens, and again whenever the window's layout changes in a way that
+        // puts another panel over it (a chest opening below EAQS's quick slots, another mod's panel being
+        // dragged on top of it). A change that leaves the panel clear does not move it, so it does not jump
+        // about while it is in use.
+        private void PlaceAutomatically(RectTransform parent, Vector2 corner) {
+            float now = Time.unscaledTime;
+            if (_hasAutoOffset && now < _nextLayoutCheck) {
+                return;
+            }
+
+            _nextLayoutCheck = now + LayoutCheckInterval;
+            int signature = LayoutSignature(parent);
+            if (_hasAutoOffset && signature == _layoutSignature) {
+                return;
+            }
+
+            _layoutSignature = signature;
+            CollectObstacles(parent);
+            Vector2 size = _root.sizeDelta;
+            Rect bounds = ScreenBounds(parent, size);
+            Vector2 current = corner + _autoOffset;
+            if (_hasAutoOffset && current.x >= bounds.xMin && current.x <= bounds.xMax &&
+                current.y >= bounds.yMin && current.y <= bounds.yMax && IsFree(PanelRect(current, size))) {
+                return;
+            }
+
+            _autoOffset = FindFreeSpot(parent, corner, size) - corner;
+            _hasAutoOffset = true;
+            EpicLoot.Log($"[ShardSlotPanel] Placed at {_autoOffset} from the inventory panel's corner, clear of " +
+                $"{_obstacles.Count} other panel parts.");
+        }
+
+        // The free top-left nearest the preferred spot. A free spot is either the preferred one or one that sits
+        // against an edge of the player panel or of another panel, so those edges are the only candidates. They
+        // are tried nearest first, so the first free one along each axis ends that axis's search.
+        private Vector2 FindFreeSpot(RectTransform parent, Vector2 corner, Vector2 size) {
+            Vector2 preferred = corner + DefaultOffset;
+            Rect bounds = ScreenBounds(parent, size);
+
+            // The screen edges too, for a small screen where the preferred spot itself is off the edge.
+            var xs = new List<float> { preferred.x, corner.x + PanelGap, corner.x - size.x, bounds.xMin, bounds.xMax };
+            var ys = new List<float> { preferred.y, corner.y - PanelGap, bounds.yMin, bounds.yMax };
+            if (TryRectInSpace(parent, _playerPanel, out Rect player)) {
+                xs.Add(player.xMin);
+                ys.Add(player.yMax);
+            }
+
+            foreach (Rect obstacle in _obstacles) {
+                xs.Add(obstacle.xMax + PanelGap);
+                xs.Add(obstacle.xMin - PanelGap - size.x);
+                ys.Add(obstacle.yMin - PanelGap);
+                ys.Add(obstacle.yMax + PanelGap + size.y);
+            }
+
+            xs.Sort((a, b) => Mathf.Abs(a - preferred.x).CompareTo(Mathf.Abs(b - preferred.x)));
+            ys.Sort((a, b) => Mathf.Abs(a - preferred.y).CompareTo(Mathf.Abs(b - preferred.y)));
+
+            Vector2 best = ClampToScreen(parent, preferred);
+            float bestDistance = float.MaxValue;
+            foreach (float x in xs) {
+                float dx = x - preferred.x;
+                if (dx * dx >= bestDistance) {
+                    break;
+                }
+
+                if (x < bounds.xMin || x > bounds.xMax) {
+                    continue;
+                }
+
+                foreach (float y in ys) {
+                    float dy = y - preferred.y;
+                    float distance = dx * dx + dy * dy;
+                    if (distance >= bestDistance) {
+                        break;
+                    }
+
+                    if (y < bounds.yMin || y > bounds.yMax || !IsFree(PanelRect(new Vector2(x, y), size))) {
+                        continue;
+                    }
+
+                    best = new Vector2(x, y);
+                    bestDistance = distance;
+                    break;
+                }
+            }
+
+            return best;
+        }
+
+        // Free means at least PanelGap from every other panel. A candidate sits exactly that far from the edge
+        // it came from, so the test allows that much and no less.
+        private bool IsFree(Rect panel) {
+            const float gap = PanelGap - 0.5f;
+            var padded = Rect.MinMaxRect(panel.xMin - gap, panel.yMin - gap, panel.xMax + gap, panel.yMax + gap);
+            foreach (Rect obstacle in _obstacles) {
+                if (padded.Overlaps(obstacle)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // What the other panels draw: the rectangle of every visible graphic in the window, so a part another mod
+        // hangs outside its panel (EAQS's equipment and quick slot backgrounds and cells, the chest panel's weight
+        // box) counts where it is drawn. Graphics are clipped to any mask above them, so a scroll list's hidden
+        // rows do not count, and one inside a rectangle already taken (a cell on its panel's background, an icon
+        // on its cell) is left out, which keeps the list to a few dozen.
+        private void CollectObstacles(RectTransform parent) {
+            _obstacles.Clear();
+            Rect screen = parent.rect;
+            var unbounded = new Rect(float.MinValue / 2f, float.MinValue / 2f, float.MaxValue, float.MaxValue);
+            foreach (Transform panel in parent) {
+                if (panel != _root) {
+                    Collect(parent, panel, unbounded, screen);
+                }
+            }
+        }
+
+        private void Collect(RectTransform parent, Transform node, Rect clip, Rect screen) {
+            if (!IsShownSubtree(node)) {
+                return;
+            }
+
+            AddGraphic(parent, node, clip, screen);
+            clip = ClipBy(parent, node, clip);
+            foreach (Transform child in node) {
+                Collect(parent, child, clip, screen);
+            }
+        }
+
+        private static bool IsShownSubtree(Transform node) {
+            if (!node.gameObject.activeSelf) {
+                return false;
+            }
+
+            var group = node.GetComponent<CanvasGroup>();
+            return group == null || !group.enabled || group.alpha > 0.01f;
+        }
+
+        private void AddGraphic(RectTransform parent, Transform node, Rect clip, Rect screen) {
+            var graphic = node.GetComponent<Graphic>();
+            if (graphic == null || !graphic.enabled || graphic.color.a <= 0.01f ||
+                (graphic is TMP_Text text && string.IsNullOrEmpty(text.text)) ||
+                !TryRectInSpace(parent, graphic.rectTransform, out Rect rect)) {
+                return;
+            }
+
+            if (rect.width >= screen.width * BackdropFraction && rect.height >= screen.height * BackdropFraction) {
+                return;
+            }
+
+            rect = Rect.MinMaxRect(Mathf.Max(rect.xMin, clip.xMin), Mathf.Max(rect.yMin, clip.yMin),
+                Mathf.Min(rect.xMax, clip.xMax), Mathf.Min(rect.yMax, clip.yMax));
+            if (rect.width < MinObstacleSize || rect.height < MinObstacleSize) {
+                return;
+            }
+
+            foreach (Rect taken in _obstacles) {
+                if (rect.xMin >= taken.xMin && rect.xMax <= taken.xMax && rect.yMin >= taken.yMin && rect.yMax <= taken.yMax) {
+                    return;
+                }
+            }
+
+            _obstacles.Add(rect);
+        }
+
+        // The clip a mask on `node` puts on everything under it.
+        private Rect ClipBy(RectTransform parent, Transform node, Rect clip) {
+            var rectMask = node.GetComponent<RectMask2D>();
+            var mask = node.GetComponent<Mask>();
+            if ((rectMask == null || !rectMask.enabled) && (mask == null || !mask.enabled)) {
+                return clip;
+            }
+
+            if (!TryRectInSpace(parent, (RectTransform)node, out Rect rect)) {
+                return clip;
+            }
+
+            return Rect.MinMaxRect(Mathf.Max(rect.xMin, clip.xMin), Mathf.Max(rect.yMin, clip.yMin),
+                Mathf.Min(rect.xMax, clip.xMax), Mathf.Min(rect.yMax, clip.yMax));
+        }
+
+        // A cheap fingerprint of the window's layout: which panels and parts are shown, where and how big. It is
+        // what decides whether the full measurement in CollectObstacles has to run again.
+        private int LayoutSignature(RectTransform parent) {
+            unchecked {
+                int hash = 17;
+                hash = hash * 31 + Mathf.RoundToInt(parent.rect.width);
+                hash = hash * 31 + Mathf.RoundToInt(parent.rect.height);
+                hash = hash * 31 + Mathf.RoundToInt(_root.sizeDelta.x);
+                foreach (Transform panel in parent) {
+                    if (panel == _root) {
+                        continue;
+                    }
+
+                    hash = hash * 31 + Fingerprint(panel);
+                    if (!IsShownSubtree(panel)) {
+                        continue;
+                    }
+
+                    foreach (Transform part in panel) {
+                        hash = hash * 31 + Fingerprint(part);
+                    }
+                }
+
+                return hash;
+            }
+        }
+
+        // Shown or hidden counts by a fade group too, not only by being active: MidgardPlus keeps its equipment
+        // panel active but faded out while it settles into place (up to a second and a half after the window or a
+        // chest opens), and the panel has to be measured again once it fades in.
+        private static int Fingerprint(Transform node) {
+            unchecked {
+                if (!IsShownSubtree(node) || !(node is RectTransform rect)) {
+                    return 0;
+                }
+
+                Vector3 position = rect.localPosition;
+                Vector2 size = rect.rect.size;
+                return (((Mathf.RoundToInt(position.x) * 31 + Mathf.RoundToInt(position.y)) * 31
+                    + Mathf.RoundToInt(size.x)) * 31 + Mathf.RoundToInt(size.y)) * 31
+                    + Mathf.RoundToInt(rect.localScale.x * 100f) + 1;
+            }
+        }
+
+        private bool TryRectInSpace(RectTransform parent, RectTransform target, out Rect rect) {
+            rect = default;
+            if (target == null) {
+                return false;
+            }
+
+            target.GetWorldCorners(_corners);
+            float xMin = float.MaxValue, yMin = float.MaxValue, xMax = float.MinValue, yMax = float.MinValue;
+            foreach (Vector3 worldCorner in _corners) {
+                Vector3 local = parent.InverseTransformPoint(worldCorner);
+                xMin = Mathf.Min(xMin, local.x);
+                yMin = Mathf.Min(yMin, local.y);
+                xMax = Mathf.Max(xMax, local.x);
+                yMax = Mathf.Max(yMax, local.y);
+            }
+
+            rect = Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+            return !float.IsNaN(rect.width) && !float.IsNaN(rect.height) && rect.width > 0f && rect.height > 0f;
+        }
+
+        private Vector2 PlayerCorner(RectTransform parent) {
+            _playerPanel.GetWorldCorners(_corners);
+            return parent.InverseTransformPoint(_corners[3]);
+        }
+
+        private static Rect PanelRect(Vector2 topLeft, Vector2 size) =>
+            new Rect(topLeft.x, topLeft.y - size.y, size.x, size.y);
+
+        // The top-left positions that keep the whole panel on screen.
+        private static Rect ScreenBounds(RectTransform parent, Vector2 size) {
+            Rect screen = parent.rect;
+            float xMin = screen.xMin + ScreenMargin;
+            float yMax = screen.yMax - ScreenMargin;
+            float xMax = Mathf.Max(xMin, screen.xMax - ScreenMargin - size.x);
+            float yMin = Mathf.Min(yMax, screen.yMin + ScreenMargin + size.y);
+            return Rect.MinMaxRect(xMin, yMin, xMax, yMax);
+        }
+
+        private Vector2 ClampToScreen(RectTransform parent, Vector2 topLeft) {
+            Rect bounds = ScreenBounds(parent, _root.sizeDelta);
+            return new Vector2(Mathf.Clamp(topLeft.x, bounds.xMin, bounds.xMax), Mathf.Clamp(topLeft.y, bounds.yMin, bounds.yMax));
+        }
+
+        // The panel is anchored and pivoted top-left, so its anchored position is its top-left measured from the
+        // parent's top-left.
+        private Vector2 TopLeft(RectTransform parent) {
+            Rect rect = parent.rect;
+            return new Vector2(rect.xMin + _root.anchoredPosition.x, rect.yMax + _root.anchoredPosition.y);
+        }
+
+        private void SetTopLeft(RectTransform parent, Vector2 topLeft) {
+            Rect rect = parent.rect;
+            var position = new Vector2(topLeft.x - rect.xMin, topLeft.y - rect.yMax);
+            if (_root.anchoredPosition != position) {
+                _root.anchoredPosition = position;
+            }
+        }
+
+        // Dragging the panel by its frame. The drop spot is kept as Shard Slot Panel Offset, from the inventory
+        // panel's corner like automatic placement, and placement turns Manual, so the panel opens there from
+        // then on. Setting Shard Slot Panel Placement back to Automatic hands it back to automatic placement.
+        private void BeginDrag(PointerEventData data) {
+            if (!IsShown || data.button != PointerEventData.InputButton.Left) {
+                return;
+            }
+
+            var parent = (RectTransform)_root.parent;
+            if (!RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, data.position, data.pressEventCamera,
+                    out _dragStartPointer)) {
+                return;
+            }
+
+            _dragStartTopLeft = TopLeft(parent);
+            _dragging = true;
+        }
+
+        private void Drag(PointerEventData data) {
+            var parent = (RectTransform)_root.parent;
+            if (!_dragging || !RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, data.position,
+                    data.pressEventCamera, out Vector2 pointer)) {
+                return;
+            }
+
+            SetTopLeft(parent, ClampToScreen(parent, _dragStartTopLeft + pointer - _dragStartPointer));
+        }
+
+        private void EndDrag() {
+            if (!_dragging) {
+                return;
+            }
+
+            _dragging = false;
             if (!IsAlive || _playerPanel == null) {
                 return;
             }
 
             var parent = (RectTransform)_root.parent;
-            _playerPanel.GetWorldCorners(_corners);
-            Vector3 corner = parent.InverseTransformPoint(_corners[3]);
-            Rect rect = parent.rect;
-            Vector2 offset = ELConfig.ShardSlotPanelOffset != null ? ELConfig.ShardSlotPanelOffset.Value : DefaultOffset;
-            var position = new Vector2(corner.x - rect.xMin + offset.x, corner.y - rect.yMax + offset.y);
-            if (_root.anchoredPosition != position) {
-                _root.anchoredPosition = position;
-            }
+            Vector2 offset = TopLeft(parent) - PlayerCorner(parent);
+            ELConfig.ShardSlotPanelOffset.Value = new Vector2(Mathf.Round(offset.x), Mathf.Round(offset.y));
+            ELConfig.ShardSlotPanelPlacement.Value = ShardSlotPanelPlacement.Manual;
+        }
+
+        private sealed class DragHandle : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler {
+            public ShardSlotPanel Panel;
+
+            public void OnBeginDrag(PointerEventData eventData) => Panel?.BeginDrag(eventData);
+
+            public void OnDrag(PointerEventData eventData) => Panel?.Drag(eventData);
+
+            public void OnEndDrag(PointerEventData eventData) => Panel?.EndDrag();
+
+            // The window closed mid-drag: keep the spot reached so far.
+            private void OnDisable() => Panel?.EndDrag();
         }
 
         // Appends the panel's group to InventoryGui's cycle. Appended, never inserted: vanilla addresses the

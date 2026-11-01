@@ -84,7 +84,7 @@ namespace EpicLoot_UnityLib
         }
 
         // Matches the prefab's glyph child by name: "Hint" in most panels, "Hint-1" in the ones with two.
-        private static GameObject FindGamepadHint(Transform button)
+        protected static GameObject FindGamepadHint(Transform button)
         {
             for (int i = 0; i < button.childCount; ++i)
             {

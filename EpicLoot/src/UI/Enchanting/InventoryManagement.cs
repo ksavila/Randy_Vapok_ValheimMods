@@ -180,6 +180,15 @@ public class InventoryManagement
 
     public bool GiveItem(ItemDrop.ItemData item)
     {
+        return GiveItem(item, announce: true);
+    }
+
+    /// <param name="announce">
+    /// Whether each stack added is reported. Vanilla shows those one a second, so a caller giving many kinds at
+    /// once passes false and reports the total itself. Anything dropped for lack of room is always reported.
+    /// </param>
+    public bool GiveItem(ItemDrop.ItemData item, bool announce)
+    {
         Debug.Log($"Attempting to give itemdata {item.m_shared.m_name} with amount {item.m_stack}");
         Inventory inventory = GetInventory();
 
@@ -191,7 +200,7 @@ public class InventoryManagement
 
             if (inventory != null)
             {
-                AddItem(ref inventory, itemToAdd);
+                AddItem(ref inventory, itemToAdd, announce);
             }
             else
             {
@@ -202,11 +211,14 @@ public class InventoryManagement
         return true;
     }
 
-    private void AddItem(ref Inventory inventory, ItemDrop.ItemData item)
+    private void AddItem(ref Inventory inventory, ItemDrop.ItemData item, bool announce)
     {
         if (inventory.AddItem(item))
         {
-            SendMessage($"$msg_added {item.m_shared.m_name}", item.m_stack, item.GetIcon());
+            if (announce)
+            {
+                SendMessage($"$msg_added {item.m_shared.m_name}", item.m_stack, item.GetIcon());
+            }
         }
         else
         {

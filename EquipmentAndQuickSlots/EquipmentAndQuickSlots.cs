@@ -37,13 +37,16 @@ namespace EquipmentAndQuickSlots {
         private Harmony _harmony;
 
         private void Awake() {
+            // EAQS lays its panel out for Auga itself (AugaPanel), so Auga must not restyle it as a dependent
+            // mod as well. Before any bundle loads or UI is built.
+            Auga.API.AutoRestyle_Exclude(PluginId);
+
             _instance = this;
 
-            // True only when Auga's APIManager pointed this assembly's Auga.* references at Auga.dll as it
-            // loaded (the soft dependency above opts it in); otherwise the stubs in src/Auga run.
+            // The API stub in src/Auga finds Auga through BepInEx; the soft dependency above loads Auga first.
             HasAuga = Auga.API.IsLoaded();
             if (!HasAuga && BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("randyknapp.mods.auga"))
-                LogWarning("Project Auga is installed but its API did not attach to Equipment and Quick Slots; the Auga layout is off. Check the log for an APIManager error.");
+                LogWarning("Project Auga is installed but its API did not attach to Equipment and Quick Slots; the Auga layout is off. Check the log for an error from Auga as it loaded.");
 
             new ValConfig(Config);
 
