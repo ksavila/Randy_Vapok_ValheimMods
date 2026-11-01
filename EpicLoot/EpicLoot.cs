@@ -100,6 +100,10 @@ public sealed class EpicLoot : BaseUnityPlugin {
 
     [UsedImplicitly]
     void Awake() {
+        // Epic Loot styles its UI for Auga itself (InitializeAuga, EpicLootAuga), so Auga must not restyle it
+        // as a dependent mod as well. Before any bundle loads or UI is built.
+        Auga.API.AutoRestyle_Exclude(PluginId);
+
         _instance = this;
 
         // Wire the shared Common support layer (config binder, piece loader, drawers) to this plugin before
@@ -232,17 +236,16 @@ public sealed class EpicLoot : BaseUnityPlugin {
 
 
     /// <summary>
-    /// Auga's Awake has already run (the soft dependency orders it first), and by the time this assembly
-    /// loaded, Auga's APIManager had pointed every Auga.* reference in it at Auga.dll - which is what makes
-    /// IsLoaded() answer true. Auga installed but IsLoaded() false means that redirection did not happen
-    /// (the stubs in src/integrations/AugaAPI.cs are running), so the integration stays off.
+    /// Auga's Awake has already run (the soft dependency orders it first), so the API stub in
+    /// src/integrations/AugaAPI.cs finds it through BepInEx and IsLoaded() answers true. Auga installed but
+    /// IsLoaded() false means Auga's plugin did not load, so the integration stays off.
     /// </summary>
     private void InitializeAuga() {
         HasAuga = Auga.API.IsLoaded();
         if (!HasAuga) {
             if (BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey("randyknapp.mods.auga")) {
                 LogWarningForce("Project Auga is installed but its API did not attach to Epic Loot; " +
-                    "Epic Loot's Auga integration is off. Check the log for an APIManager error.");
+                    "Epic Loot's Auga integration is off. Check the log for an error from Auga as it loaded.");
             }
 
             return;

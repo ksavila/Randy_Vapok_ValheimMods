@@ -100,6 +100,11 @@ namespace EpicLoot.CraftingV2
                 {
                     AugaFixupMultiselectPrefab(stashUI.MaterialsList.ElementPrefab.gameObject);
                     AugaFixupMultiselectPrefab(stashUI.ShardstonesList.ElementPrefab.gameObject);
+
+                    if (stashUI.TakeAllMaterialsButton != null)
+                        stashUI.TakeAllMaterialsButton = EpicLootAuga.ReplaceButton(stashUI.TakeAllMaterialsButton, false, true);
+                    if (stashUI.TakeAllShardstonesButton != null)
+                        stashUI.TakeAllShardstonesButton = EpicLootAuga.ReplaceButton(stashUI.TakeAllShardstonesButton, false, true);
                 }
             }
 
