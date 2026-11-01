@@ -1,4 +1,15 @@
+**0.15.6**
+* Works with Auga 1.4.1 and newer
+* The shard slot panel no longer covers the quick slots of Equipment and Quick Slots or other mods' panels beside the inventory.
+* The shard slot panel can be dragged
+* Only the player who bought a treasure map can open its chest, even as an admin, and maps left unfinished because someone else opened their chest first now complete when their owner opens it.
+* The enchanting table's Storage tab has Take All Materials and Take All Shardstones buttons.
+
 **0.15.5**
+* Deep North weapons and armor now drop from Deep North creatures, chests, treasure maps and the Frozen King once the Frozen King is defeated.
+* Worlds load much faster alongside large location mods
+* Epic Loot no longer re-checks every item and loot list at startup when the mod list and its configs have not changed.
+* The skeletons and blobs summoned by the Aspect of the Writhing Dead no longer drop magic items.
 * Ability cooldowns no longer reset when you log out or die
 * MacOS native Metal Shader support
     * This is new and hard for us to test, so please report any issues you see with it.   

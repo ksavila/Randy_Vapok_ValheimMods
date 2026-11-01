@@ -1,3 +1,6 @@
+**3.2.1**
+* Works with Auga 1.4.1 and newer again.
+
 **3.2.0**
 * Quick slots can now be used from a controller with a button combination that can be changed in the config.
 * The quick slot bar and the equipment panel show each quick slot's controller buttons while playing on a controller.

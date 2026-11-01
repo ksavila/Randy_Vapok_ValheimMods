@@ -311,6 +311,82 @@ namespace EpicLoot_UnityLib
             });
         }
 
+        /// <summary>
+        /// Takes as much of each kind as the inventory has room for, in one change. Room is counted the way
+        /// vanilla's CanAddItem counts it, kind by kind, so the empty slots one kind fills are not counted again
+        /// for the next.
+        /// </summary>
+        public void WithdrawAll(IEnumerable<StashItemKind> kinds)
+        {
+            Player player = Player.m_localPlayer;
+            Inventory inventory = player != null ? player.GetInventory() : null;
+            if (inventory == null)
+            {
+                return;
+            }
+
+            if (!HasAccess(flash: true))
+            {
+                player.Message(MessageHud.MessageType.Center, "$mod_epicloot_storage_warded");
+                return;
+            }
+
+            Dictionary<string, int> deltas = new Dictionary<string, int>();
+            int emptySlots = inventory.GetEmptySlots();
+            bool noRoom = false;
+            foreach (StashItemKind kind in kinds)
+            {
+                int count = GetCount(kind.PrefabName);
+                if (count <= 0)
+                {
+                    continue;
+                }
+
+                // The created item rather than the prefab, as in Withdraw: free stack space is per world level.
+                ItemDrop.ItemData item = kind.CreateItem(count);
+                int maxStack = Mathf.Max(1, item.m_shared.m_maxStackSize);
+                int stackRoom = inventory.FindFreeStackSpace(item.m_shared.m_name, item.m_worldLevel);
+                int take = Mathf.Min(count, stackRoom + emptySlots * maxStack);
+                if (take <= 0)
+                {
+                    noRoom = true;
+                    continue;
+                }
+
+                emptySlots -= (Mathf.Max(0, take - stackRoom) + maxStack - 1) / maxStack;
+                deltas[kind.PrefabName] = -take;
+            }
+
+            if (deltas.Count == 0)
+            {
+                if (noRoom)
+                {
+                    player.Message(MessageHud.MessageType.Center, "$msg_noroom");
+                }
+
+                return;
+            }
+
+            Send(deltas, applied =>
+            {
+                int taken = 0;
+                foreach (KeyValuePair<string, int> pair in applied)
+                {
+                    if (pair.Value < 0 && StashCatalog.TryGetByPrefab(pair.Key, out StashItemKind kind))
+                    {
+                        InventoryManagement.Instance.GiveItem(kind.CreateItem(-pair.Value), announce: false);
+                        taken -= pair.Value;
+                    }
+                }
+
+                if (taken > 0)
+                {
+                    Player.m_localPlayer?.Message(MessageHud.MessageType.TopLeft,
+                        Localization.instance.Localize("$mod_epicloot_storage_taken", taken.ToString()));
+                }
+            });
+        }
+
         /// <summary>Spends up to <paramref name="amount"/> as a crafting cost; returns how many were taken.</summary>
         public int Take(string prefabName, int amount)
         {

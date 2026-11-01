@@ -111,6 +111,30 @@ namespace EpicLoot.Adventure
 
             Destroy(gameObject.GetComponent<WearNTear>());
         }
+
+        /// <summary>
+        /// Whether <paramref name="container"/> is a treasure map chest its buyer has not found yet, and
+        /// <paramref name="playerID"/> is not that buyer. Private privacy alone does not keep others out:
+        /// Server Devcommands lets admins open any private chest (on by default), and other mods share chests.
+        /// Someone else opening it used to finish their own map of that biome and interval instead, and
+        /// flag the chest found, after which the buyer's map could never be finished.
+        /// </summary>
+        public static bool IsLockedFor(Container container, long playerID)
+        {
+            if (!container.TryGetComponent(out TreasureMapChest _))
+            {
+                return false;
+            }
+
+            var zdo = container.m_nview == null ? null : container.m_nview.GetZDO();
+            if (zdo == null || !zdo.IsValid() || zdo.GetBool("TreasureMapChest.HasBeenFound"))
+            {
+                return false;
+            }
+
+            var owner = zdo.GetLong(ZDOVars.s_creator);
+            return owner != 0L && owner != playerID;
+        }
     }
 
     [HarmonyPatch(typeof(Container), nameof(Container.Awake))]
@@ -143,38 +167,92 @@ namespace EpicLoot.Adventure
         }
     }
 
+    /// <summary>
+    /// Keeps an unfound treasure map chest closed to everyone but its buyer (<see cref="TreasureMapChest.IsLockedFor"/>).
+    /// Every open, stack and take-all request is checked here, on the requester's machine and again on the chest
+    /// owner's. Last, so it overrides Server Devcommands' postfix, which grants admins every private chest.
+    /// </summary>
+    [HarmonyPatch(typeof(Container), nameof(Container.CheckAccess))]
+    public static class Container_CheckAccess_TreasureMapChest_Patch
+    {
+        [HarmonyPriority(Priority.Last)]
+        public static void Postfix(Container __instance, long playerID, ref bool __result)
+        {
+            if (__result && TreasureMapChest.IsLockedFor(__instance, playerID))
+            {
+                __result = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Server Devcommands also turns every refused open into a granted one on the admin's machine, which would show
+    /// the chest anyway. Last, so it runs after that prefix and refuses the open as vanilla does a private chest.
+    /// </summary>
+    [HarmonyPatch(typeof(Container), nameof(Container.RPC_OpenResponse))]
+    public static class Container_RPC_OpenResponse_TreasureMapChest_Patch
+    {
+        [HarmonyPriority(Priority.Last)]
+        public static bool Prefix(Container __instance, bool granted)
+        {
+            var player = Player.m_localPlayer;
+            if (!granted || player == null || !TreasureMapChest.IsLockedFor(__instance, player.GetPlayerID()))
+            {
+                return true;
+            }
+
+            player.Message(MessageHud.MessageType.Center, "$msg_cantopen");
+            return false;
+        }
+    }
+
     [HarmonyPatch(typeof(Container), nameof(Container.RPC_OpenResponse))]
     public static class Container_RPC_OpenRespons_Patch
     {
         public static void Postfix(Container __instance, long uid, bool granted)
         {
             var zdo = __instance.m_nview == null ? null : __instance.m_nview.GetZDO();
-            if (zdo == null || !zdo.IsValid() || zdo.GetBool("TreasureMapChest.HasBeenFound"))
+            var player = Player.m_localPlayer;
+            var treasureMapChest = __instance.GetComponent<TreasureMapChest>();
+            if (!granted || player == null || treasureMapChest == null || zdo == null || !zdo.IsValid())
             {
                 return;
             }
 
-            var player = Player.m_localPlayer;
-            if (granted && player != null)
+            // Only the buyer finds their chest. Anyone else is refused an unfound one (the patches above), and
+            // opening one already found credits them nothing.
+            var owner = zdo.GetLong(ZDOVars.s_creator);
+            if (owner != 0L && owner != player.GetPlayerID())
             {
-                var treasureMapChest = __instance.GetComponent<TreasureMapChest>();
-                if (treasureMapChest != null)
-                {
-                    EpicLoot.Log($"Player is opening treasure map chest ({treasureMapChest.Biome}, {treasureMapChest.Interval})!");
-                    var saveData = player.GetAdventureSaveData();
-                    saveData.FoundTreasureChest(treasureMapChest.Interval, treasureMapChest.Biome);
-                    player.SaveAdventureSaveData();
-
-                    zdo.Set("TreasureMapChest.HasBeenFound", true);
-
-                    __instance.m_privacy = Container.PrivacySetting.Public;
-
-                    MessageHud.instance.ShowBiomeFoundMsg("Treasure Found!", true);
-
-                    Object.Destroy(treasureMapChest.GetComponent<Beacon>());
-                    Object.Destroy(treasureMapChest.GetComponent<Rigidbody>());
-                }
+                return;
             }
+
+            var saveData = player.GetAdventureSaveData();
+            if (zdo.GetBool("TreasureMapChest.HasBeenFound"))
+            {
+                // Before the buyer-only lock, another player could open the chest first: it was flagged found
+                // while the buyer's map stayed open. The buyer finishes the map by opening it.
+                if (saveData.FoundTreasureChest(treasureMapChest.Interval, treasureMapChest.Biome))
+                {
+                    player.SaveAdventureSaveData();
+                    MessageHud.instance.ShowBiomeFoundMsg("Treasure Found!", true);
+                }
+
+                return;
+            }
+
+            EpicLoot.Log($"Player is opening treasure map chest ({treasureMapChest.Biome}, {treasureMapChest.Interval})!");
+            saveData.FoundTreasureChest(treasureMapChest.Interval, treasureMapChest.Biome);
+            player.SaveAdventureSaveData();
+
+            zdo.Set("TreasureMapChest.HasBeenFound", true);
+
+            __instance.m_privacy = Container.PrivacySetting.Public;
+
+            MessageHud.instance.ShowBiomeFoundMsg("Treasure Found!", true);
+
+            Object.Destroy(treasureMapChest.GetComponent<Beacon>());
+            Object.Destroy(treasureMapChest.GetComponent<Rigidbody>());
         }
     }
 }
