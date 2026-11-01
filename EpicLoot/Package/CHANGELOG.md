@@ -1,4 +1,8 @@
 **0.15.5**
+* Named items from legendaries.json are now called unique items everywhere, so they are no longer confused with the Legendary rarity
+    * Unique items are labelled Unique Item in their tooltip and show a gold rune in the inventory like set pieces do
+    * In the inventory the cell gets a gold border, the rune breathes and embers drift up the cell; a smoky glow is the alternative. Unique Item Effects under Interface picks embers, glow, both or none, and Item Colors has the colour
+    * The compendium's Legendary Sets page is now Unique Sets
 * Ability cooldowns no longer reset when you log out or die
 * MacOS native Metal Shader support
     * This is new and hard for us to test, so please report any issues you see with it.   
